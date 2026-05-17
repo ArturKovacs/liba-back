@@ -57,12 +57,9 @@ impl PushSender {
     ) -> Result<(), WebPushError> {
         let subscriptions = self.subscriptions.lock().await;
         let futures = subscriptions.iter().map(async |subscription_info| {
-            let result = self
+            self
                 .send_push_message_for_single(subscription_info, payload, ttl)
-                .await;
-            if let Err(error) = result {
-                error!("An error occured: {:?}", error);
-            }
+                .await
         });
 
         join_all(futures).await;
@@ -75,7 +72,7 @@ impl PushSender {
         subscription_info: &SubscriptionInfo,
         payload: &[u8],
         ttl: Option<u32>,
-    ) -> Result<(), WebPushError> {
+    ) -> Result<(), ()> {
         let mut builder = WebPushMessageBuilder::new(subscription_info);
 
         builder.set_payload(ContentEncoding::Aes128Gcm, payload);
@@ -86,16 +83,41 @@ impl PushSender {
 
         let cursor = Cursor::new(&self.vapid_private_key);
 
-        let mut sig_builder = VapidSignatureBuilder::from_pem(cursor, subscription_info).unwrap();
+        let mut sig_builder = match VapidSignatureBuilder::from_pem(cursor, subscription_info){
+            Ok(builder) => builder,
+            Err(e) => {
+                error!("Failed calling VapidSignatureBuilder::from_pem: {:?}", e);
+                return Err(());
+            }
+        };
 
         sig_builder.add_claim("sub", "mailto:test@example.com");
         sig_builder.add_claim("foo", "bar");
         sig_builder.add_claim("omg", 123);
 
-        let signature = sig_builder.build().unwrap();
+        let signature = match sig_builder.build() {
+            Ok(signature) => signature,
+            Err(e) => {
+                error!("Failed calling sig_builder.build: {:?}", e);
+                return Err(());
+            }
+        };
         builder.set_vapid_signature(signature);
 
-        self.client.send(builder.build()?).await
+        let web_push_message = match builder.build() {
+            Ok(message) => message,
+            Err(e) => {
+                error!("Failed calling WebPushMessageBuilder::build: {:?}", e);
+                return Err(());
+            }
+        };
+
+        if let Err(e) = self.client.send(web_push_message).await {
+            error!("Failed calling self.client.send: {:?}", e);
+            return Err(());
+        }
+
+        Ok(())
     }
 }
 
@@ -149,8 +171,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
         .fallback_service(static_dir)
         .with_state(shared_state);
 
-    // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
