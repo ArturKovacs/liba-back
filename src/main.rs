@@ -1,37 +1,62 @@
-use std::{fs::File, io::{Cursor, Read}};
+use std::{fs::File, io::{Cursor, Read}, sync::{Arc}};
+
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use futures::future::join_all;
+
+use hyper::{Server, body::{Body, HttpBody}, service::{make_service_fn, service_fn}};
+use hyper::server::conn;
+use hyper::{Request, Response};
+// use hyper_util::rt::TokioIo;
+use tokio::{net::TcpListener, sync::Mutex};
+use log::{error, info};
 
 use web_push::*;
 
 static PUBLIC_KEY: &str = "BJnk2lda5XbNnCGHOd_488hPYQUeqDo_kAsI3cKAphNAB1f7EUPuatikwUadbY10LrGioLpLTzrR2i5A1PTyUM4";
 
 struct PushSender {
-    subscription_info: SubscriptionInfo,
+    subscriptions: Vec<SubscriptionInfo>,
     vapid_private_key: String,
     client: HyperWebPushClient,
 }
 
 impl PushSender {
     /// vapid_private_key should be a PEM-encoded EC private key
-    fn new(subscription_info: SubscriptionInfo, vapid_private_key: String) -> Self {
+    fn new(vapid_private_key: String) -> Self {
         Self {
-            subscription_info,
+            subscriptions: Vec::with_capacity(20),
             vapid_private_key,
             client: HyperWebPushClient::new(),
         }
     }
 
     async fn send_push_message(&self, payload: &[u8], ttl: Option<u32>) -> Result<(), WebPushError> {
-        let mut builder = WebPushMessageBuilder::new(&self.subscription_info);
+
+        let futures = self.subscriptions.iter().map(async |subscription_info| {
+            let result = self.send_push_message_for_single(subscription_info, payload, ttl).await;
+            if let Err(error) = result {
+                error!("An error occured: {:?}", error);
+            }
+        });
+
+        join_all(futures).await;
+
+        Ok(())
+    }
+
+    async fn send_push_message_for_single(&self, subscription_info: &SubscriptionInfo, payload: &[u8], ttl: Option<u32>) -> Result<(), WebPushError> {
+        let mut builder = WebPushMessageBuilder::new(subscription_info);
 
         builder.set_payload(ContentEncoding::Aes128Gcm, payload);
-
+        
         if let Some(seconds) = ttl {
             builder.set_ttl(seconds);
         }
 
         let cursor = Cursor::new(&self.vapid_private_key);
 
-        let mut sig_builder = VapidSignatureBuilder::from_pem(cursor, &self.subscription_info).unwrap();
+        let mut sig_builder = VapidSignatureBuilder::from_pem(cursor, subscription_info).unwrap();
 
         sig_builder.add_claim("sub", "mailto:test@example.com");
         sig_builder.add_claim("foo", "bar");
@@ -44,73 +69,108 @@ impl PushSender {
     }
 }
 
+
+async fn hello(mut req: Request<hyper::Body>, subscription_info: Arc<Mutex<Option<SubscriptionInfo>>>) -> Result<Response<Body>, Infallible> {
+    match req.uri().path() {
+        "/api/subscription" => {
+            let data = req.body_mut().data().await;
+            match data {
+                Some(Ok(chunk)) => {
+                    let mut subscription_info = subscription_info.lock().await;
+                    *subscription_info = Some(serde_json::from_slice(&chunk).unwrap());
+                    info!("Received subscription info: {:?}", subscription_info);
+                },
+                Some(Err(e)) => error!("Failed to read request body: {:?}", e),
+                None => error!("Request body is empty"),
+            }
+        }
+        "/api/message" => {
+            // Handle message logic here
+            info!("Received message");
+        },
+        _ => {
+            info!("Received request for unknown path: {}", req.uri().path());
+        }
+    }
+
+    Ok(Response::new("Hello, World!".into()))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    let mut subscription_info_file = String::new();
-    let mut vapid_private_key: Option<String> = None;
-    let mut push_payload: Option<String> = None;
-    let mut encoding: Option<String> = None;
-    let mut ttl: Option<u32> = None;
-    
-    let ece_scheme = match encoding.as_deref() {
-        Some("aes128gcm") => ContentEncoding::Aes128Gcm,
-        Some("aesgcm") => ContentEncoding::AesGcm,
-        None => ContentEncoding::Aes128Gcm,
-        Some(_) => panic!("Content encoding can only be 'aes128gcm' or 'aesgcm'"),
-    };
 
-    let ece_scheme = ContentEncoding::Aes128Gcm;
-    
-    // let mut file = File::open(subscription_info_file).unwrap();
-    // let mut contents = String::new();
-    // file.read_to_string(&mut contents).unwrap();
-    // let subscription_info: SubscriptionInfo = serde_json::from_str(&contents).unwrap();
+    // For every connection, we must make a `Service` to handle all
+    // incoming HTTP requests on said connection.
+    let make_svc = make_service_fn(|_conn| {
+        // This is the `Service` that will handle the connection.
+        // `service_fn` is a helper to convert a function that
+        // returns a Response into a `Service`.
 
-    let subscription_info = SubscriptionInfo {
-        endpoint: "TODO get this from the client".to_string(),
-        keys: SubscriptionKeys {
-            p256dh: "TODO get this from the client".to_string(),
-            auth: "TODO get this from the client".to_string(),
-        },
-    };
+        async {
+            let subscription_info: Arc<Mutex<Option<SubscriptionInfo>>> = Arc::new(Mutex::new(None));
+            Ok::<_, Infallible>(service_fn(move |req| {
+                hello(req, subscription_info.clone())
+            }))
+        }
+    });
 
-    let vapid_private_key = Some("TODO: read the private key from either a file or an environment variable".to_string());
+    let addr = ([0, 0, 0, 0], 3001).into();
 
-    let ttl = Some(60);
+    let server = Server::bind(&addr).serve(make_svc);
 
-    let mut builder = WebPushMessageBuilder::new(&subscription_info);
+    println!("Listening on http://{}", addr);
 
-    if let Some(ref payload) = push_payload {
-        builder.set_payload(ece_scheme, payload.as_bytes());
-    } else {
-        builder.set_payload(ece_scheme, "Hello world!".as_bytes());
-    }
+    server.await?;
 
-    if let Some(seconds) = ttl {
-        builder.set_ttl(seconds);
-    }
 
-    if let Some(ref vapid_file) = vapid_private_key {
-        let file = File::open(vapid_file).unwrap();
 
-        let mut sig_builder = VapidSignatureBuilder::from_pem(file, &subscription_info).unwrap();
 
-        sig_builder.add_claim("sub", "mailto:test@example.com");
-        sig_builder.add_claim("foo", "bar");
-        sig_builder.add_claim("omg", 123);
 
-        let signature = sig_builder.build().unwrap();
 
-        builder.set_vapid_signature(signature);
-    };
 
-    let client = HyperWebPushClient::new();
 
-    let result = client.send(builder.build()?).await;
 
-    if let Err(error) = result {
-        println!("An error occured: {:?}", error);
-    }
+
+    // -------------------------------------------------------
+
+    // // We create a TcpListener and bind it to 127.0.0.1:3000
+    // let listener = TcpListener::bind(addr).await?;
+
+
+
+    // // We start a loop to continuously accept incoming connections
+    // loop {
+    //     let (stream, _) = listener.accept().await?;
+
+    //     // Use an adapter to access something implementing `tokio::io` traits as if they implement
+    //     // `hyper::rt` IO traits.
+    //     let io = TokioIo::new(stream);
+
+    //     // Spawn a tokio task to serve multiple connections concurrently
+    //     tokio::task::spawn(async move {
+    //         let mut subscription_info: Option<SubscriptionInfo> = None;
+
+    //         // Finally, we bind the incoming connection to our `hello` service
+    //         if let Err(err) = conn::Http::new()
+    //             // `service_fn` converts our function in a `Service`
+    //             .serve_connection(io, service_fn(move |req| {
+    //                 hello(req)
+    //             }))
+    //             .await
+    //         {
+    //             eprintln!("Error serving connection: {:?}", err);
+    //         }
+    //     });
+    // }
+
+
+    // TODO: start a hyper server and 
+
+    // let mut sender = PushSender::new(subscription_info, vapid_private_key);
+
+    // if let Err(error) = result {
+    //     error!("An error occured: {:?}", error);
+    // }
 
     Ok(())
 }
