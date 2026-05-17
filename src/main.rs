@@ -1,40 +1,65 @@
-use std::{fs::File, io::{Cursor, Read}, sync::{Arc}};
+use std::{
+    collections::HashSet, fs::File, io::{Cursor, Read}, sync::Arc
+};
 
-use std::convert::Infallible;
-use std::net::SocketAddr;
 use futures::future::join_all;
 
-use hyper::{Server, body::{Body, HttpBody}, service::{make_service_fn, service_fn}};
-use hyper::server::conn;
-use hyper::{Request, Response};
 // use hyper_util::rt::TokioIo;
-use tokio::{net::TcpListener, sync::Mutex};
-use log::{error, info};
+use log::{error, info, debug};
+use tokio::{sync::Mutex};
+
+use axum::{
+    Json, Router,
+    extract::State,
+    response::IntoResponse,
+    routing::{get, post},
+};
+
+use tower_http::{
+    services::{ServeDir, ServeFile},
+};
 
 use web_push::*;
 
-static PUBLIC_KEY: &str = "BJnk2lda5XbNnCGHOd_488hPYQUeqDo_kAsI3cKAphNAB1f7EUPuatikwUadbY10LrGioLpLTzrR2i5A1PTyUM4";
-
 struct PushSender {
-    subscriptions: Vec<SubscriptionInfo>,
+    subscriptions: Mutex<HashSet<SubscriptionInfo>>,
     vapid_private_key: String,
+    vapid_public_key: String,
     client: HyperWebPushClient,
 }
 
 impl PushSender {
     /// vapid_private_key should be a PEM-encoded EC private key
-    fn new(vapid_private_key: String) -> Self {
+    fn new(vapid_private_key: String, vapid_public_key: String) -> Self {
         Self {
-            subscriptions: Vec::with_capacity(20),
+            subscriptions: Mutex::new(HashSet::with_capacity(50)),
             vapid_private_key,
+            vapid_public_key,
             client: HyperWebPushClient::new(),
         }
     }
 
-    async fn send_push_message(&self, payload: &[u8], ttl: Option<u32>) -> Result<(), WebPushError> {
+    async fn add_subscription(&self, subscription_info: SubscriptionInfo) {
+        let mut subscriptions = self.subscriptions.lock().await;
+        debug!("Adding subscription. Total subscriptions: {}. New subscription: {:?}", subscriptions.len(), subscription_info);
+        subscriptions.insert(subscription_info);
+    }
 
-        let futures = self.subscriptions.iter().map(async |subscription_info| {
-            let result = self.send_push_message_for_single(subscription_info, payload, ttl).await;
+    async fn remove_subscription(&self, subscription_info: &SubscriptionInfo) {
+        let mut subscriptions = self.subscriptions.lock().await;
+        subscriptions.remove(subscription_info);
+    }
+
+    async fn send_push_message(
+        &self,
+        payload: &[u8],
+        ttl: Option<u32>,
+    ) -> Result<(), WebPushError> {
+        let subscriptions = self.subscriptions.lock().await;
+        let futures = subscriptions.iter().map(async |subscription_info| {
+            let result = self
+                .send_push_message_for_single(subscription_info, payload, ttl)
+                .await;
             if let Err(error) = result {
                 error!("An error occured: {:?}", error);
             }
@@ -45,11 +70,16 @@ impl PushSender {
         Ok(())
     }
 
-    async fn send_push_message_for_single(&self, subscription_info: &SubscriptionInfo, payload: &[u8], ttl: Option<u32>) -> Result<(), WebPushError> {
+    async fn send_push_message_for_single(
+        &self,
+        subscription_info: &SubscriptionInfo,
+        payload: &[u8],
+        ttl: Option<u32>,
+    ) -> Result<(), WebPushError> {
         let mut builder = WebPushMessageBuilder::new(subscription_info);
 
         builder.set_payload(ContentEncoding::Aes128Gcm, payload);
-        
+
         if let Some(seconds) = ttl {
             builder.set_ttl(seconds);
         }
@@ -69,108 +99,59 @@ impl PushSender {
     }
 }
 
+async fn subscription_handler(
+    State(push_sender): State<Arc<PushSender>>,
+    Json(subscription_info): Json<SubscriptionInfo>,
+) -> impl IntoResponse {
+    push_sender.add_subscription(subscription_info).await;
+    "Subscription added"
+}
 
-async fn hello(mut req: Request<hyper::Body>, subscription_info: Arc<Mutex<Option<SubscriptionInfo>>>) -> Result<Response<Body>, Infallible> {
-    match req.uri().path() {
-        "/api/subscription" => {
-            let data = req.body_mut().data().await;
-            match data {
-                Some(Ok(chunk)) => {
-                    let mut subscription_info = subscription_info.lock().await;
-                    *subscription_info = Some(serde_json::from_slice(&chunk).unwrap());
-                    info!("Received subscription info: {:?}", subscription_info);
-                },
-                Some(Err(e)) => error!("Failed to read request body: {:?}", e),
-                None => error!("Request body is empty"),
-            }
-        }
-        "/api/message" => {
-            // Handle message logic here
-            info!("Received message");
+async fn post_message_handler(
+    State(push_sender): State<Arc<PushSender>>,
+    payload: String,
+) -> impl IntoResponse {
+    debug!("Distributing push message to subscribers: {}", payload);
+    
+    let result = push_sender
+        .send_push_message(payload.as_bytes(), Some(60))
+        .await;
+    match result {
+        Ok(_) => info!("Push message distributed successfully"),
+        Err(e) => {
+            error!("Failed to send push message: {:?}", e);
+            return Err("");
         },
-        _ => {
-            info!("Received request for unknown path: {}", req.uri().path());
-        }
     }
+    Ok("Message sent")
+}
 
-    Ok(Response::new("Hello, World!".into()))
+async fn get_public_key_handler(State(push_sender): State<Arc<PushSender>>,) -> impl IntoResponse {
+    push_sender.vapid_public_key.clone()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    env_logger::init();
 
-    // For every connection, we must make a `Service` to handle all
-    // incoming HTTP requests on said connection.
-    let make_svc = make_service_fn(|_conn| {
-        // This is the `Service` that will handle the connection.
-        // `service_fn` is a helper to convert a function that
-        // returns a Response into a `Service`.
+    let vapid_private_key = std::fs::read_to_string("vapid_private_key.pem")?;
+    let vapid_public_key = std::fs::read_to_string("vapid_public_key.txt")?;
 
-        async {
-            let subscription_info: Arc<Mutex<Option<SubscriptionInfo>>> = Arc::new(Mutex::new(None));
-            Ok::<_, Infallible>(service_fn(move |req| {
-                hello(req, subscription_info.clone())
-            }))
-        }
-    });
+    let shared_state = Arc::new(PushSender::new(vapid_private_key, vapid_public_key));
 
-    let addr = ([0, 0, 0, 0], 3001).into();
+    let static_dir = ServeDir::new("../liba-front").append_index_html_on_directories(true);
 
-    let server = Server::bind(&addr).serve(make_svc);
+    let app = Router::new()
+        .route("/hello", get(async || "Hello, World!"))
+        .route("/api/subscription", post(subscription_handler))
+        .route("/api/message", post(post_message_handler))
+        .route("/api/public-key", get(get_public_key_handler))
+        .fallback_service(static_dir)
+        .with_state(shared_state);
 
-    println!("Listening on http://{}", addr);
-
-    server.await?;
-
-
-
-
-
-
-
-
-
-
-    // -------------------------------------------------------
-
-    // // We create a TcpListener and bind it to 127.0.0.1:3000
-    // let listener = TcpListener::bind(addr).await?;
-
-
-
-    // // We start a loop to continuously accept incoming connections
-    // loop {
-    //     let (stream, _) = listener.accept().await?;
-
-    //     // Use an adapter to access something implementing `tokio::io` traits as if they implement
-    //     // `hyper::rt` IO traits.
-    //     let io = TokioIo::new(stream);
-
-    //     // Spawn a tokio task to serve multiple connections concurrently
-    //     tokio::task::spawn(async move {
-    //         let mut subscription_info: Option<SubscriptionInfo> = None;
-
-    //         // Finally, we bind the incoming connection to our `hello` service
-    //         if let Err(err) = conn::Http::new()
-    //             // `service_fn` converts our function in a `Service`
-    //             .serve_connection(io, service_fn(move |req| {
-    //                 hello(req)
-    //             }))
-    //             .await
-    //         {
-    //             eprintln!("Error serving connection: {:?}", err);
-    //         }
-    //     });
-    // }
-
-
-    // TODO: start a hyper server and 
-
-    // let mut sender = PushSender::new(subscription_info, vapid_private_key);
-
-    // if let Err(error) = result {
-    //     error!("An error occured: {:?}", error);
-    // }
+    // run our app with hyper, listening globally on port 3000
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
 
     Ok(())
 }
