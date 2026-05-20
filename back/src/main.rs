@@ -161,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     let shared_state = Arc::new(PushSender::new(vapid_private_key, vapid_public_key));
 
-    let static_dir = ServeDir::new("../liba-front").append_index_html_on_directories(true);
+    let static_dir = ServeDir::new("./static").append_index_html_on_directories(true);
 
     let app = Router::new()
         .route("/hello", get(async || "Hello, World!"))

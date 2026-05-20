@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
     "checkJs": true,
+    "rootDir": "./",
     "target": "esnext",
     "lib": ["esnext", "dom", "webworker"],
     "outDir": "./dist"
   },
-  "exclude": ["serviceWorker.js", "main.js"]
+  "exclude": ["js/serviceWorker.js", "main.js"]
 }
