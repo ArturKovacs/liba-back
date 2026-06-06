@@ -164,6 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     let static_dir = ServeDir::new("./static").append_index_html_on_directories(true);
 
     let app = Router::new()
+        .route("/debug", get(serve_index))
         .route("/hello", get(async || "Hello, World!"))
         .route("/api/subscription", post(subscription_handler))
         .route("/api/message", post(post_message_handler))
@@ -176,4 +177,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
+}
+
+#[axum::debug_handler]
+async fn serve_index() -> Result<axum::response::Html<String>, String> {
+    let index_content = std::fs::read_to_string("./static/index.html").map_err(|e| e.to_string())?;
+    Ok(axum::response::Html(index_content))
 }

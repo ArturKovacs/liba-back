@@ -26,6 +26,13 @@ resource "aws_security_group" "sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -51,31 +58,6 @@ resource "aws_instance" "nginx" {
   key_name               = aws_key_pair.key.key_name
   vpc_security_group_ids = [aws_security_group.sg.id]
 
-  user_data = file("user-data.sh")
-
-  provisioner "remote-exec" {
-    inline = ["mkdir -p /home/ec2-user/LIBA"]
-
-    connection {
-      type        = "ssh"
-      user        = "ec2-user"
-      private_key = file("~/.ssh/id_ed25519")
-      host        = self.public_ip
-    }
-  }
-
-  provisioner "file" {
-    source      = "dist/"
-    destination = "/home/ec2-user/LIBA"
-
-    connection {
-      type        = "ssh"
-      user        = "ec2-user"
-      private_key = file("~/.ssh/id_ed25519")
-      host        = self.public_ip
-    }
-  }
-
   tags = {
     Name = "single-nginx"
   }
@@ -83,6 +65,11 @@ resource "aws_instance" "nginx" {
   depends_on = [aws_security_group.sg]
 }
 
+resource "aws_eip" "nginx" {
+  instance = aws_instance.nginx.id
+  domain = "vpc"
+}
+
 output "ip" {
-  value = aws_instance.nginx.public_ip
+  value = aws_eip.nginx.public_ip
 }

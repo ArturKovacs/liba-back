@@ -1,0 +1,14 @@
+[Unit]
+Description=LIBA Backend Service
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/LIBA
+ExecStart=/home/ec2-user/LIBA/liba-back
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

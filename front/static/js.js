@@ -46,6 +46,9 @@ if ('serviceWorker' in navigator) {
             const message = error instanceof Error ? error.message : String(error);
             displayFatalError(`An error occurred while starting the application. Error: ${message}`);
         }
+    }).catch(error => {
+        // Using console.error here so that debug.js can process this. (instead of letting the browser handle the error)
+        console.error('Failed to register service worker:', error);
     });
 } else {
     displayFatalError("This website requires service worker support, but it seems that your browser does not support service workers.");
@@ -143,11 +146,14 @@ async function main(serviceWorkerRegistration) {
         throw new Error(`Failed to fetch VAPID public key from server. Status was ${publicKeyResponse.status}`);
     }
     const vapidPublicKey = await publicKeyResponse.text();
+    console.log('Fetched VAPID public key from server:', vapidPublicKey);
 
     async function tryGetPushSubscription() {
         const subscription = await serviceWorkerRegistration.pushManager.getSubscription();
+        console.log('serviceWorkerRegistration.pushManager.getSubscription:', subscription);
         if (subscription) {
             const applicationServerKey = subscription.options.applicationServerKey;
+            console.log('applicationServerKey:', applicationServerKey);
             if (!applicationServerKey) {
                 console.warn('Existing push subscription found, but it does not have an application server key. This is unexpected and may indicate a problem with the subscription. Resubscribing with the current VAPID public key.');
                 await subscription.unsubscribe();
@@ -188,12 +194,12 @@ async function main(serviceWorkerRegistration) {
                 userVisibleOnly: true,
                 applicationServerKey: vapidPublicKey
             });
+            console.log('New push subscription created:', subscription);
         }
 
         return subscription;
     }
 
-    // The callback must NOT be async, otherwise the service worker registration will fail
     app.ports.startWorker.subscribe(async function () {
         console.log('Requesting notification permission and registering service worker');
         let result = "failed";
@@ -221,3 +227,4 @@ async function main(serviceWorkerRegistration) {
 
     
 }
+
