@@ -161,9 +161,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     let shared_state = Arc::new(PushSender::new(vapid_private_key, vapid_public_key));
 
-    let static_dir = ServeDir::new("./static").append_index_html_on_directories(true);
-
+    let static_dir = ServeDir::new("./static")
+        .append_index_html_on_directories(true)
+        .fallback(get(serve_index));
+    
+    
     let app = Router::new()
+        .route("/floor/{floor_id}", get(serve_index))
         .route("/debug", get(serve_index))
         .route("/hello", get(async || "Hello, World!"))
         .route("/api/subscription", post(subscription_handler))

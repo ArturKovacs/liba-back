@@ -1,6 +1,7 @@
 port module Main exposing (main)
 
 import Browser
+import Browser.Navigation as Nav
 import Element exposing (..)
 import Element.Background as Background
 import Element.Border as Border
@@ -9,6 +10,8 @@ import Element.Input as Input
 import Html
 import Http
 import Json.Encode
+import Url
+import Url.Parser exposing ((</>), Parser, oneOf, s, top)
 
 
 
@@ -25,8 +28,15 @@ port subscriptionResultHandler : (String -> msg) -> Sub msg
 -- MODEL
 
 
+type Route
+    = Home
+    | FloorRoute Int
+
+
 type alias Model =
-    { subscriptionStatus : SubscriptionStatus
+    { key : Nav.Key
+    , url : Url.Url
+    , subscriptionStatus : SubscriptionStatus
     , reportingBananaFoundStatus : ReportingBananaFoundStatus
     }
 
@@ -34,6 +44,24 @@ type alias Model =
 type alias Flags =
     { isSubscribed : Bool
     }
+
+
+parseRoute : Url.Url -> Route
+parseRoute url =
+    case Url.Parser.parse routeParser url of
+        Just route ->
+            route
+
+        Nothing ->
+            Home
+
+
+routeParser : Parser (Route -> a) a
+routeParser =
+    oneOf
+        [ Url.Parser.map Home top
+        , Url.Parser.map FloorRoute (s "floor" </> Url.Parser.int)
+        ]
 
 
 type SubscriptionStatus
@@ -51,9 +79,11 @@ type ReportingBananaFoundStatus
     | FinishedReportingBananaFound (Result Http.Error ())
 
 
-init : Flags -> ( Model, Cmd Msg )
-init flags =
-    ( { subscriptionStatus =
+init : Flags -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
+init flags url key =
+    ( { key = key
+      , url = url
+      , subscriptionStatus =
             if flags.isSubscribed then
                 Subscribed
 
@@ -81,6 +111,8 @@ type Msg
     | SubscriptionResultUnknown String
     | ReportBananaFound Floor -- Send a message to the server which will boradcase it as push messages to everyone
     | ReportBananaFoundResult (Result Http.Error ())
+    | LinkClicked Browser.UrlRequest
+    | UrlChanged Url.Url
 
 
 subscriptionResultToMessage : String -> Msg
@@ -123,13 +155,24 @@ update msg model =
                 { url = "/api/message"
 
                 -- , body = Http.jsonBody (Json.Encode.object [ ( "floor", Json.Encode.int floor ) ])
-                , body = Http.stringBody "text/plain" ("Banana found on floor " ++ String.fromInt floor)
+                , body = Http.stringBody "text/plain" ("Banánt láttak a " ++ (String.fromInt floor) ++ ". emeleten!")
                 , expect = Http.expectWhatever ReportBananaFoundResult
                 }
             )
 
         ReportBananaFoundResult result ->
             ( { model | reportingBananaFoundStatus = FinishedReportingBananaFound result }, Cmd.none )
+
+        LinkClicked urlRequest ->
+            case urlRequest of
+                Browser.Internal url ->
+                    ( model, Nav.pushUrl model.key (Url.toString url) )
+
+                Browser.External href ->
+                    ( model, Nav.load href )
+
+        UrlChanged url ->
+            ( { model | url = url }, Cmd.none )
 
 
 
@@ -138,11 +181,13 @@ update msg model =
 
 main : Program Flags Model Msg
 main =
-    Browser.element
+    Browser.application
         { init = init
         , update = update
         , subscriptions = subscriptions
         , view = view
+        , onUrlChange = UrlChanged
+        , onUrlRequest = LinkClicked
         }
 
 
@@ -164,7 +209,7 @@ makeSubscribeButton =
         , label =
             el
                 []
-                (text "Subscribe")
+                (text "Kérek Push Éretsítéseket")
         }
 
 
@@ -180,7 +225,7 @@ subscriptionPanel model =
                 , Font.color (rgb255 255 255 120)
                 , centerX
                 ]
-                (text "Subscribing...")
+                (text "Feliratkozás...")
 
         Subscribed ->
             el
@@ -188,7 +233,7 @@ subscriptionPanel model =
                 , Font.color (rgb255 0 255 180)
                 , centerX
                 ]
-                (text "You have subscribed")
+                (text "Feliratkoztál a push értesítésekre.")
 
         SubscriptionFailed ->
             el
@@ -196,7 +241,7 @@ subscriptionPanel model =
                 , Font.color (rgb255 255 100 100)
                 , centerX
                 ]
-                (text "Subscription failed")
+                (text "Nem sikerült feliratkozni a push értesítésekre.")
 
         NotificationsDenied ->
             el
@@ -204,7 +249,7 @@ subscriptionPanel model =
                 , Font.color (rgb255 255 100 100)
                 , centerX
                 ]
-                (text "Notifications permission denied")
+                (text "Értesítések megtagadva. Engedélyezd a push értesítéseket a böngésződben.")
 
         SubscriptionStatusUnknown other ->
             el
@@ -212,11 +257,84 @@ subscriptionPanel model =
                 , Font.color (rgb255 255 100 100)
                 , centerX
                 ]
-                (text ("Subscription status unknown: " ++ other))
+                (text ("Ismeretlen hiba történt a push értesítések aktiválása során: " ++ other))
 
 
-view : Model -> Html.Html Msg
+view : Model -> Browser.Document Msg
 view model =
+    let
+        currentRoute =
+            parseRoute model.url
+
+        content =
+            case currentRoute of
+                Home ->
+                    homeView model
+
+                FloorRoute floorId ->
+                    floorView model (Floor floorId)
+    in
+    { title = "Van Banán?"
+    , body = [ content ]
+    }
+
+
+makeFloorLink : Int -> Element Msg
+makeFloorLink floorId =
+    let
+        floorStr =
+            String.fromInt floorId
+    in
+    Element.link
+        [ Border.rounded 10
+        , Border.width 2
+        , Border.color (rgb255 100 200 255)
+        , paddingXY 24 14
+        , centerX
+        ]
+        { url = "/floor/" ++ floorStr
+        , label =
+            el
+                []
+                (text (floorStr ++ ". Emelet"))
+        }
+
+
+homeView : Model -> Html.Html Msg
+homeView model =
+    layout
+        [ Background.color (rgb255 35 35 35)
+        , Font.color (rgb255 255 255 120)
+        ]
+    <|
+        column
+            [ width fill
+            , height fill
+            , spacing 24
+            , centerX
+            , centerY
+            , padding 24
+            ]
+            ([ el
+                [ Font.size 36
+                , Font.bold
+                , centerX
+                ]
+                (text "Van Banán?")
+             , subscriptionPanel model
+             ]
+                ++ List.map makeFloorLink [ 0, 1, 2, 3 ]
+            )
+
+
+floorView : Model -> Floor -> Html.Html Msg
+floorView model floor =
+    let
+        floorStr =
+            case floor of
+                Floor n ->
+                    String.fromInt n
+    in
     layout
         [ Background.color (rgb255 35 35 35)
         , Font.color (rgb255 255 255 120)
@@ -235,7 +353,7 @@ view model =
                 , Font.bold
                 , centerX
                 ]
-                (text "Hello Elm")
+                (text (floorStr ++ ". Emelet"))
             , subscriptionPanel model
             , Input.button
                 [ Border.rounded 10
@@ -244,10 +362,23 @@ view model =
                 , paddingXY 24 14
                 , centerX
                 ]
-                { onPress = Just (ReportBananaFound (Floor 1))
+                { onPress = Just (ReportBananaFound floor)
                 , label =
                     el
                         []
-                        (text "I see bananas in the kitchen!")
+                        (text "Látok banánt a konyhában!")
+                }
+            , Element.link
+                [ Border.rounded 10
+                , Border.width 2
+                , Border.color (rgb255 100 200 255)
+                , paddingXY 24 14
+                , centerX
+                ]
+                { url = "/"
+                , label =
+                    el
+                        []
+                        (text "Emeletek")
                 }
             ]

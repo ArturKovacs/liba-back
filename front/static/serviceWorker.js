@@ -9,8 +9,8 @@ self.addEventListener('push', (event) => {
 
     const message = event.data.text();
 
-    self.registration.showNotification('LiBa', {
-        body: 'Message is: ' + message,
+    self.registration.showNotification('Van Banán?', {
+        body: String(message),
     });
 })
 
