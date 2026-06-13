@@ -61,7 +61,7 @@ impl PushSender {
     /// vapid_private_key should be a PEM-encoded EC private key
     fn new(vapid_private_key: String, vapid_public_key: String) -> Self {
         Self {
-            database: db::Database::new(),
+            database: db::Database::new( Default::default()),
             vapid_private_key,
             vapid_public_key,
             client: HyperWebPushClient::new(),
