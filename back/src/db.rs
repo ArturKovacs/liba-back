@@ -1,9 +1,8 @@
-
 use log::debug;
 use serde::Deserialize;
-use web_push::{SubscriptionInfo, SubscriptionKeys};
-use tokio::sync::Mutex;
 use std::collections::{HashMap, HashSet};
+use tokio::sync::Mutex;
+use web_push::{SubscriptionInfo, SubscriptionKeys};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Floor(pub u32);
@@ -76,7 +75,10 @@ impl Database {
             .collect()
     }
 
-    pub async fn get_floors_for_subscription(&self, subscription: &SubscriptionId) -> HashSet<Floor> {
+    pub async fn get_floors_for_subscription(
+        &self,
+        subscription: &SubscriptionId,
+    ) -> HashSet<Floor> {
         let subscriptions = self.subscriptions.lock().await;
         subscriptions
             .get(subscription)

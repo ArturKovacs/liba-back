@@ -15,7 +15,8 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use web_push::{
-    ContentEncoding, HyperWebPushClient, SubscriptionInfo, VapidSignatureBuilder, WebPushClient, WebPushError, WebPushMessageBuilder
+    ContentEncoding, HyperWebPushClient, SubscriptionInfo, VapidSignatureBuilder, WebPushClient,
+    WebPushError, WebPushMessageBuilder,
 };
 
 use crate::db::SubscriptionId;
@@ -32,7 +33,7 @@ mod dto {
         pub subscription_info: SubscriptionInfo,
         pub floor: u32,
     }
-    
+
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
     pub struct PostMessageBody {
         pub floor: u32,
@@ -49,7 +50,6 @@ mod dto {
         pub floor: u32,
     }
 }
-
 
 struct PushSender {
     database: db::Database,
@@ -70,11 +70,15 @@ impl PushSender {
     }
 
     async fn add_subscription(&self, subscription_info: SubscriptionInfo, floor: db::Floor) {
-        self.database.add_subscription(subscription_info, floor).await;
+        self.database
+            .add_subscription(subscription_info, floor)
+            .await;
     }
 
     async fn remove_subscription(&self, subscription_id: &SubscriptionId, floor: db::Floor) {
-        self.database.remove_subscription(subscription_id, floor).await;
+        self.database
+            .remove_subscription(subscription_id, floor)
+            .await;
     }
 
     async fn send_push_message(
@@ -148,43 +152,64 @@ impl PushSender {
     }
 }
 
-async fn subscription_handler(
+async fn handle_posting_subscription(
     State(push_sender): State<Arc<PushSender>>,
     Json(subscription_info): Json<dto::ExtendedSubscriptionInfo>,
 ) -> impl IntoResponse {
-    push_sender.add_subscription(subscription_info.subscription_info, db::Floor(subscription_info.floor)).await;
+    push_sender
+        .add_subscription(
+            subscription_info.subscription_info,
+            db::Floor(subscription_info.floor),
+        )
+        .await;
     "Subscription added"
 }
 
-async fn subscription_get_handler(
+async fn handle_getting_subscription(
     State(push_sender): State<Arc<PushSender>>,
     Query(subscription_id): Query<SubscriptionId>,
 ) -> Json<dto::GetSubscriptionResponse> {
     // TODO the subscrtiption id may not be URI decoded. (it must be uri encoded on the sender side)
-    info!("Received subscription get request for subscription_id: {:?}", subscription_id);
+    info!(
+        "Received subscription get request for subscription_id: {:?}",
+        subscription_id
+    );
 
-    let subscription_floors = push_sender.database.get_floors_for_subscription(&subscription_id).await;
-    let subscription_floors: Vec<u32> = subscription_floors.into_iter().map(|floor| floor.0).collect();
-    Json(dto::GetSubscriptionResponse { floors: subscription_floors })
+    let subscription_floors = push_sender
+        .database
+        .get_floors_for_subscription(&subscription_id)
+        .await;
+    let subscription_floors: Vec<u32> = subscription_floors
+        .into_iter()
+        .map(|floor| floor.0)
+        .collect();
+    Json(dto::GetSubscriptionResponse {
+        floors: subscription_floors,
+    })
 }
 
-async fn subscription_delete_handler(
+async fn handle_deleting_subscription(
     State(push_sender): State<Arc<PushSender>>,
     Query(subscription): Query<dto::SubscriptionDeleteParams>,
 ) -> impl IntoResponse {
     debug!("Received subscription delete: {:?}", subscription);
     let subscription_id = SubscriptionId {
-        endpoint: subscription.endpoint
+        endpoint: subscription.endpoint,
     };
-    push_sender.remove_subscription(&subscription_id, db::Floor(subscription.floor)).await;
+    push_sender
+        .remove_subscription(&subscription_id, db::Floor(subscription.floor))
+        .await;
     "OK"
 }
 
-async fn post_message_handler(
+async fn handle_posting_message(
     State(push_sender): State<Arc<PushSender>>,
     Json(body): Json<dto::PostMessageBody>,
 ) -> impl IntoResponse {
-    debug!("Distributing push message to subscribers for floor: {}", body.floor);
+    debug!(
+        "Distributing push message to subscribers for floor: {}",
+        body.floor
+    );
 
     let payload = serde_json::to_string(&body).map_err(|e| {
         error!("Failed to serialize PostMessageBody: {:?}", e);
@@ -194,7 +219,7 @@ async fn post_message_handler(
     let result = push_sender
         .send_push_message(payload.as_bytes(), db::Floor(body.floor), Some(60))
         .await;
-    
+
     match result {
         Ok(_) => info!("Push message distributed successfully"),
         Err(e) => {
@@ -205,7 +230,9 @@ async fn post_message_handler(
     Ok("Message sent")
 }
 
-async fn get_public_key_handler(State(push_sender): State<Arc<PushSender>>) -> impl IntoResponse {
+async fn handle_getting_public_key(
+    State(push_sender): State<Arc<PushSender>>,
+) -> impl IntoResponse {
     push_sender.vapid_public_key.clone()
 }
 
@@ -220,15 +247,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     let static_dir = ServeDir::new("./static")
         .append_index_html_on_directories(true)
-        .fallback(get(serve_index));
+        .fallback(get(handle_getting_index));
 
     let app = Router::new()
-        .route("/floor/{floor_id}", get(serve_index))
-        .route("/debug", get(serve_index))
+        .route("/floor/{floor_id}", get(handle_getting_index))
+        .route("/debug", get(handle_getting_index))
         .route("/hello", get(async || "Hello, World!"))
-        .route("/api/subscription", post(subscription_handler).get(subscription_get_handler).delete(subscription_delete_handler))
-        .route("/api/message", post(post_message_handler))
-        .route("/api/public-key", get(get_public_key_handler))
+        .route(
+            "/api/subscription",
+            post(handle_posting_subscription)
+                .get(handle_getting_subscription)
+                .delete(handle_deleting_subscription),
+        )
+        .route("/api/message", post(handle_posting_message))
+        .route("/api/public-key", get(handle_getting_public_key))
         .fallback_service(static_dir)
         .with_state(shared_state);
 
@@ -239,7 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 }
 
 #[axum::debug_handler]
-async fn serve_index() -> Result<axum::response::Html<String>, String> {
+async fn handle_getting_index() -> Result<axum::response::Html<String>, String> {
     let index_content =
         std::fs::read_to_string("./static/index.html").map_err(|e| e.to_string())?;
     Ok(axum::response::Html(index_content))
