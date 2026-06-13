@@ -1,4 +1,4 @@
-use std::{io::Cursor, sync::Arc};
+use std::{io::{self, Cursor}, sync::Arc};
 
 use futures::future::join_all;
 
@@ -15,8 +15,7 @@ use axum::{
 use tower_http::services::ServeDir;
 
 use web_push::{
-    ContentEncoding, HyperWebPushClient, SubscriptionInfo, VapidSignatureBuilder, WebPushClient,
-    WebPushError, WebPushMessageBuilder,
+    ContentEncoding, HyperWebPushClient, SubscriptionInfo, VapidSignatureBuilder, WebPushClient, WebPushMessageBuilder,
 };
 
 use crate::db::SubscriptionId;
@@ -69,16 +68,16 @@ impl PushSender {
         }
     }
 
-    async fn add_subscription(&self, subscription_info: SubscriptionInfo, floor: db::Floor) {
+    async fn add_subscription(&self, subscription_info: SubscriptionInfo, floor: db::Floor) -> Result<(), io::Error> {
         self.database
             .add_subscription(subscription_info, floor)
-            .await;
+            .await
     }
 
-    async fn remove_subscription(&self, subscription_id: &SubscriptionId, floor: db::Floor) {
+    async fn remove_subscription(&self, subscription_id: &SubscriptionId, floor: db::Floor) -> Result<(), io::Error> {
         self.database
             .remove_subscription(subscription_id, floor)
-            .await;
+            .await
     }
 
     async fn send_push_message(
@@ -86,14 +85,17 @@ impl PushSender {
         payload: &[u8],
         floor: db::Floor,
         ttl: Option<u32>,
-    ) -> Result<(), WebPushError> {
-        let subscriptions = self.database.get_subscriptions(floor).await;
+    ) -> Result<(), String> {
+        let subscriptions = self.database.get_subscriptions(floor).await.map_err(|e| format!("Error during get_subscriptions. {e}"))?;
         let futures = subscriptions.iter().map(async |subscription_info| {
             self.send_push_message_for_single(subscription_info, payload, ttl)
                 .await
         });
 
-        join_all(futures).await;
+        let results = join_all(futures).await;
+        for result in results {
+            result.map_err(|_| format!("Failed to send_push_message_for_single."))?;
+        }
 
         Ok(())
     }
@@ -155,57 +157,73 @@ impl PushSender {
 async fn handle_posting_subscription(
     State(push_sender): State<Arc<PushSender>>,
     Json(subscription_info): Json<dto::ExtendedSubscriptionInfo>,
-) -> impl IntoResponse {
+) -> Result<(), ()> {
     push_sender
         .add_subscription(
             subscription_info.subscription_info,
             db::Floor(subscription_info.floor),
         )
-        .await;
-    "Subscription added"
+        .await
+        .map_err(|e| {
+            error!("Failed to add spubscription. {e}");
+        })?;
+    Ok(())
 }
 
 async fn handle_getting_subscription(
     State(push_sender): State<Arc<PushSender>>,
     Query(subscription_id): Query<SubscriptionId>,
-) -> Json<dto::GetSubscriptionResponse> {
+) -> Result<Json<dto::GetSubscriptionResponse>, ()> {
     // TODO the subscrtiption id may not be URI decoded. (it must be uri encoded on the sender side)
     info!(
         "Received subscription get request for subscription_id: {:?}",
         subscription_id
     );
 
-    let subscription_floors = push_sender
+    let subscription_floors_result = push_sender
         .database
         .get_floors_for_subscription(&subscription_id)
         .await;
+
+    let subscription_floors = match subscription_floors_result {
+        Ok(floors) => floors,
+        Err(e) => {
+            error!("Error occured while get_floors_for_subscription {e}");
+            return Err(());
+        }
+    };
+
     let subscription_floors: Vec<u32> = subscription_floors
         .into_iter()
         .map(|floor| floor.0)
         .collect();
-    Json(dto::GetSubscriptionResponse {
+
+    Ok(Json(dto::GetSubscriptionResponse {
         floors: subscription_floors,
-    })
+    }))
 }
 
 async fn handle_deleting_subscription(
     State(push_sender): State<Arc<PushSender>>,
     Query(subscription): Query<dto::SubscriptionDeleteParams>,
-) -> impl IntoResponse {
+) -> Result<(), ()> {
     debug!("Received subscription delete: {:?}", subscription);
     let subscription_id = SubscriptionId {
         endpoint: subscription.endpoint,
     };
     push_sender
         .remove_subscription(&subscription_id, db::Floor(subscription.floor))
-        .await;
-    "OK"
+        .await
+        .map_err(|e| {
+            error!("Error during remove_subscription. {e}")
+        })?;
+    Ok(())
 }
 
 async fn handle_posting_message(
     State(push_sender): State<Arc<PushSender>>,
     Json(body): Json<dto::PostMessageBody>,
-) -> impl IntoResponse {
+) -> Result<(), ()> {
     debug!(
         "Distributing push message to subscribers for floor: {}",
         body.floor
@@ -213,7 +231,6 @@ async fn handle_posting_message(
 
     let payload = serde_json::to_string(&body).map_err(|e| {
         error!("Failed to serialize PostMessageBody: {:?}", e);
-        ""
     })?;
 
     let result = push_sender
@@ -224,10 +241,10 @@ async fn handle_posting_message(
         Ok(_) => info!("Push message distributed successfully"),
         Err(e) => {
             error!("Failed to send push message: {:?}", e);
-            return Err("");
+            return Err(());
         }
     }
-    Ok("Message sent")
+    Ok(())
 }
 
 async fn handle_getting_public_key(
