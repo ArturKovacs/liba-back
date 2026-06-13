@@ -137,11 +137,11 @@ type Floor
 
 type Msg
     = StartSubscription Floor
-    | SubscriptionResultSubscribed Floor
-    | SubscriptionResultFailed Floor
+    | GotSubscribeOk Floor
+    | GotSubscribeError Floor
     | StartRemovingSubscription Floor
-    | UnsubscribeFinishedOk Floor
-    | UnsubscribeFinishedFailed Floor
+    | GotUnsubscribeOk Floor
+    | GotUnsubscribeError Floor
     | ReportBananaFound Floor -- Send a message to the server which will boradcase it as push messages to everyone
     | ReportBananaFoundResult (Result Http.Error ())
     | LinkClicked Browser.UrlRequest
@@ -151,27 +151,27 @@ type Msg
 subscriptionResultToMessage : SubscriptionResult -> Msg
 subscriptionResultToMessage result =
     if result.name == portResultOkName then
-        SubscriptionResultSubscribed (Floor result.floor)
+        GotSubscribeOk (Floor result.floor)
     else if result.name == portResultFailedName then
-        SubscriptionResultFailed (Floor result.floor)
+        GotSubscribeError (Floor result.floor)
     else
         let
             _ = Debug.log "Received unexpected result" result.name
         in
-        SubscriptionResultFailed (Floor result.floor)
+        GotSubscribeError (Floor result.floor)
 
 
 unsubscribeResultToMessage : UnsubscribeResult -> Msg
 unsubscribeResultToMessage result = 
     if result.name == portResultOkName then
-        UnsubscribeFinishedOk (Floor result.floor)
+        GotUnsubscribeOk (Floor result.floor)
     else if result.name == portResultFailedName then
-        UnsubscribeFinishedFailed (Floor result.floor)
+        GotUnsubscribeError (Floor result.floor)
     else
         let
             _ = Debug.log "Received unexpected result" result.name
         in
-        UnsubscribeFinishedFailed (Floor result.floor)
+        GotUnsubscribeError (Floor result.floor)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -190,19 +190,19 @@ update msg model =
         StartSubscription floor ->
             ( changeSubscription floor Subscribing, subscribeToFloor (case floor of Floor f -> f) )
 
-        SubscriptionResultSubscribed floor ->
+        GotSubscribeOk floor ->
             ( changeSubscription floor Subscribed, Cmd.none )
 
-        SubscriptionResultFailed floor ->
+        GotSubscribeError floor ->
             ( changeSubscription floor SubscriptionFailed, Cmd.none )
 
         StartRemovingSubscription floor ->
             ( changeSubscription floor Unsubscribing, unsubscribeFromFloor (case floor of Floor f -> f) )
 
-        UnsubscribeFinishedOk floor ->
+        GotUnsubscribeOk floor ->
             ( changeSubscription floor NotSubscribed, Cmd.none )
 
-        UnsubscribeFinishedFailed floor ->
+        GotUnsubscribeError floor ->
             ( changeSubscription floor UnsubscribeFailed, Cmd.none )
 
         ReportBananaFound (Floor floor) ->
@@ -300,46 +300,6 @@ subscriptionPanel model floor =
             )
         ]
 
-
-
--- case Dict.get floorInt model.subscriptionStatus of
---     Just NotSubscribed ->
---         makeSubscribeButton floor
---     Just Subscribing ->
---         el
---             [ Font.size 22
---             , Font.color (rgb255 255 255 120)
---             , centerX
---             ]
---             (text "Feliratkozás...")
---     Just Subscribed ->
---         el
---             [ Font.size 22
---             , Font.color (rgb255 0 255 180)
---             , centerX
---             ]
---             (text "Feliratkoztál a push értesítésekre.")
---     Just SubscriptionFailed ->
---         el
---             [ Font.size 22
---             , Font.color (rgb255 255 100 100)
---             , centerX
---             ]
---             (text "Nem sikerült feliratkozni a push értesítésekre.")
---     Just (SubscriptionStatusUnknown other) ->
---         el
---             [ Font.size 22
---             , Font.color (rgb255 255 100 100)
---             , centerX
---             ]
---             (text ("Ismeretlen hiba történt a push értesítések aktiválása során: " ++ other))
---     Nothing ->
---         el
---             [ Font.size 22
---             , Font.color (rgb255 255 100 100)
---             , centerX
---             ]
---             (text ("Váratlan hiba történt. Ismeretlen emelet"))
 
 
 view : Model -> Browser.Document Msg
