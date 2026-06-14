@@ -1,8 +1,10 @@
 use std::{
     io::{self, Cursor},
     sync::Arc,
+    time::{Instant, SystemTime},
 };
 
+use chrono::{Date, DateTime, Duration, Local, NaiveDate, Utc};
 use futures::future::join_all;
 
 // use hyper_util::rt::TokioIo;
@@ -15,6 +17,7 @@ use axum::{
     routing::{get, post},
 };
 
+use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 
 use web_push::{
@@ -71,6 +74,11 @@ struct Application {
     vapid_private_key: String,
     vapid_public_key: String,
     client: HyperWebPushClient,
+    last_banana_modify_time: Mutex<NaiveDate>,
+}
+
+fn get_local_date() -> NaiveDate {
+    Local::now().date_naive()
 }
 
 impl Application {
@@ -81,6 +89,7 @@ impl Application {
             vapid_private_key,
             vapid_public_key,
             client: HyperWebPushClient::new(),
+            last_banana_modify_time: Mutex::new(get_local_date()),
         }
     }
 
@@ -105,6 +114,16 @@ impl Application {
     }
 
     async fn get_banana_states(&self) -> Result<BananaState, io::Error> {
+        let mut last_banana_modify_date = self.last_banana_modify_time.lock().await;
+        let current_date = get_local_date();
+        let date_difference = current_date - *last_banana_modify_date;
+        let last_modify_was_today = date_difference.num_days() == 0;
+        if !last_modify_was_today {
+            self.database.clear_banana_states().await?;
+            *last_banana_modify_date = current_date;
+        }
+        drop(last_banana_modify_date);
+
         self.database.get_banana_states().await
     }
 
@@ -113,6 +132,10 @@ impl Application {
         floor: db::Floor,
         has_banana: bool,
     ) -> Result<(), io::Error> {
+        let mut last_banana_modify_date = self.last_banana_modify_time.lock().await;
+        *last_banana_modify_date = get_local_date();
+        drop(last_banana_modify_date);
+
         self.database
             .set_banana_state_for_floor(floor, has_banana)
             .await

@@ -281,6 +281,20 @@ impl Database {
 
         Ok(())
     }
+
+    /// Removes all entries from the banana state container
+    pub async fn clear_banana_states(&self) -> Result<(), io::Error> {
+        self.access_db(
+            &self.banana_state_db_file_path,
+            |banana_state: &mut BananaState| {
+                banana_state.clear();
+                DbOperationResult::WritebackNeeded
+            },
+        )
+        .await?;
+
+        Ok(())
+    }
 }
 
 mod tests {
