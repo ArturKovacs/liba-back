@@ -55,7 +55,7 @@ type alias Model =
     { key : Nav.Key
     , url : Url.Url
     , subscriptionStatuses : Dict Int SubscriptionStatus
-    , reportingBananaFoundStatus : ReportingBananaFoundStatus
+    , bananaFoundStatuses : Dict Int BananaFoundStatus
     }
 
 
@@ -96,10 +96,12 @@ type SubscriptionStatus
     | UnsubscribeFailed
 
 
-type ReportingBananaFoundStatus
-    = Idle
+type BananaFoundStatus
+    = BananaNotFound
     | ReportingBananaFound
-    | FinishedReportingBananaFound (Result Http.Error ())
+    | BananaFound
+    | ReportingBananaNotFound
+    -- | FinishedReportingBananaFound (Result Http.Error ())
 
 
 init : Flags -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
@@ -121,7 +123,7 @@ init flags url key =
     ( { key = key
       , url = url
       , subscriptionStatuses = Dict.fromList subscriptionStatusList
-      , reportingBananaFoundStatus = Idle
+      , bananaFoundStatuses = Dict.empty
       }
     , Cmd.none
     )
@@ -134,6 +136,8 @@ init flags url key =
 type Floor
     = Floor Int
 
+floorToInt : Floor -> Int
+floorToInt floor = case floor of Floor f -> f
 
 type Msg
     = StartSubscription Floor
@@ -143,7 +147,9 @@ type Msg
     | GotUnsubscribeOk Floor
     | GotUnsubscribeError Floor
     | ReportBananaFound Floor -- Send a message to the server which will boradcase it as push messages to everyone
-    | ReportBananaFoundResult (Result Http.Error ())
+    | ReportBananaFoundResult Floor (Result Http.Error ())
+    | ReportBananaNotFound Floor
+    | ReportBananaNotFoundResult Floor (Result Http.Error ())
     | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
 
@@ -185,6 +191,15 @@ update msg model =
                     Dict.insert floorInt newSubscriptionStatus model.subscriptionStatuses
             in
             { model | subscriptionStatuses = newSubscriptionStatuses }
+
+        changeBananaStatus : Floor -> BananaFoundStatus -> Model
+        changeBananaStatus floor newBananaStatus =
+            let
+                floorInt = case floor of Floor f -> f
+                newBananaStatuses =
+                    Dict.insert floorInt newBananaStatus model.bananaFoundStatuses
+            in
+            { model | bananaFoundStatuses = newBananaStatuses }
     in
     case msg of
         StartSubscription floor ->
@@ -204,18 +219,46 @@ update msg model =
 
         GotUnsubscribeError floor ->
             ( changeSubscription floor UnsubscribeFailed, Cmd.none )
-
-        ReportBananaFound (Floor floor) ->
-            ( { model | reportingBananaFoundStatus = ReportingBananaFound }
+            
+        ReportBananaFound floor ->
+            let
+                floorInt = case floor of Floor f -> f
+            in
+            ( changeBananaStatus floor ReportingBananaFound
             , Http.post
                 { url = "/api/banana"
-                , body = Http.jsonBody (Json.Encode.object [ ( "floor", Json.Encode.int floor ), ( "has_banana", Json.Encode.bool True ) ])
-                , expect = Http.expectWhatever ReportBananaFoundResult
+                , body = Http.jsonBody (Json.Encode.object [ ( "floor", Json.Encode.int floorInt ), ( "has_banana", Json.Encode.bool True ) ])
+                , expect = Http.expectWhatever (ReportBananaFoundResult floor)
                 }
             )
 
-        ReportBananaFoundResult result ->
-            ( { model | reportingBananaFoundStatus = FinishedReportingBananaFound result }, Cmd.none )
+        ReportBananaFoundResult floor result ->
+            let
+                newBananaFoundStatus = case result of
+                    Ok _ -> BananaFound
+                    Err _ -> BananaNotFound
+            in
+            ( changeBananaStatus floor newBananaFoundStatus, Cmd.none )
+
+        ReportBananaNotFound floor ->
+            let
+                floorInt = case floor of Floor f -> f
+            in
+            ( changeBananaStatus floor ReportingBananaNotFound
+            , Http.post
+                { url = "/api/banana"
+                , body = Http.jsonBody (Json.Encode.object [ ( "floor", Json.Encode.int floorInt ), ( "has_banana", Json.Encode.bool False ) ])
+                , expect = Http.expectWhatever (ReportBananaNotFoundResult floor)
+                }
+            )
+
+        ReportBananaNotFoundResult floor result ->
+            let
+                newBananaFoundStatus = case result of
+                    Ok _ -> BananaNotFound
+                    Err _ -> BananaFound
+            in
+            ( changeBananaStatus floor newBananaFoundStatus, Cmd.none )
 
         LinkClicked urlRequest ->
             case urlRequest of
@@ -254,8 +297,8 @@ subscriptions _ =
 
 
 
-subscriptionPanel : Model -> Floor -> Element Msg
-subscriptionPanel model floor =
+makeSubscriptionPanel : Model -> Floor -> Element Msg
+makeSubscriptionPanel model floor =
     let
         floorInt =
             case floor of
@@ -301,26 +344,6 @@ subscriptionPanel model floor =
         ]
 
 
-
-view : Model -> Browser.Document Msg
-view model =
-    let
-        currentRoute =
-            parseRoute model.url
-
-        content =
-            case currentRoute of
-                Home ->
-                    homeView model
-
-                FloorRoute floorId ->
-                    floorView model (Floor floorId)
-    in
-    { title = "Van Banán?"
-    , body = [ content ]
-    }
-
-
 makeFloorLink : Int -> Element Msg
 makeFloorLink floorId =
     let
@@ -341,6 +364,56 @@ makeFloorLink floorId =
                 (text (floorStr ++ ". Emelet"))
         }
 
+makeBananaReportButton : Model -> Floor -> Element Msg
+makeBananaReportButton model floor =
+    let
+        floorInt = floorToInt floor
+        reportBananaTuple = ("Látok banánt a konyhában!", Just (ReportBananaFound floor))
+        (innerText, onPress) = case Dict.get floorInt model.bananaFoundStatuses of
+            Just BananaNotFound -> reportBananaTuple
+            Just BananaFound -> ("Már nem látok banánt a konyhában", Just (ReportBananaNotFound floor))
+            Just ReportingBananaFound -> ("⏳", Nothing)
+            Just ReportingBananaNotFound -> ("⏳", Nothing)
+
+            {-
+            Initially the banana status database is empty,
+            so no floor will be found in the dictionary.
+            This is normal, and it means that no banana is found for the floors.
+            -}
+            Nothing -> reportBananaTuple
+    in
+    Input.button
+        [ Border.rounded 10
+        , Border.width 2
+        , Border.color (rgb255 255 215 0)
+        , paddingXY 24 14
+        , centerX
+        ]
+        { onPress = onPress
+        , label =
+            el
+                []
+                (text innerText)
+        }
+
+
+view : Model -> Browser.Document Msg
+view model =
+    let
+        currentRoute =
+            parseRoute model.url
+
+        content =
+            case currentRoute of
+                Home ->
+                    homeView model
+
+                FloorRoute floorId ->
+                    floorView model (Floor floorId)
+    in
+    { title = "Van Banán?"
+    , body = [ content ]
+    }
 
 homeView : Model -> Html.Html Msg
 homeView model =
@@ -366,14 +439,10 @@ homeView model =
                 :: List.map makeFloorLink allFloors
             )
 
-
 floorView : Model -> Floor -> Html.Html Msg
 floorView model floor =
     let
-        floorStr =
-            case floor of
-                Floor n ->
-                    String.fromInt n
+        floorStr = String.fromInt (floorToInt floor)
     in
     layout
         [ Background.color (rgb255 35 35 35)
@@ -394,20 +463,8 @@ floorView model floor =
                 , centerX
                 ]
                 (text (floorStr ++ ". Emelet"))
-            , subscriptionPanel model floor
-            , Input.button
-                [ Border.rounded 10
-                , Border.width 2
-                , Border.color (rgb255 255 215 0)
-                , paddingXY 24 14
-                , centerX
-                ]
-                { onPress = Just (ReportBananaFound floor)
-                , label =
-                    el
-                        []
-                        (text "Látok banánt a konyhában!")
-                }
+            , makeSubscriptionPanel model floor
+            , makeBananaReportButton model floor
             , Element.link
                 [ Border.rounded 10
                 , Border.width 2
