@@ -100,6 +100,30 @@ impl Application {
         self.database.set_banana_state_for_floor(floor, has_banana).await
     }
 
+    async fn distribute_banana_message(&self, body: &dto::PostMessageBody) -> Result<(), ()> {
+        debug!(
+            "Distributing push message to subscribers for floor: {}",
+            body.floor
+        );
+
+        let payload = serde_json::to_string(body).map_err(|e| {
+            error!("Failed to serialize PostMessageBody: {:?}", e);
+        })?;
+
+        let result = self
+            .send_push_message(payload.as_bytes(), db::Floor(body.floor), Some(60))
+            .await;
+
+        match result {
+            Ok(_) => info!("Push message distributed successfully"),
+            Err(e) => {
+                error!("Failed to send push message: {:?}", e);
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
     async fn send_push_message(
         &self,
         payload: &[u8],
@@ -240,33 +264,6 @@ async fn handle_deleting_subscription(
     Ok(())
 }
 
-async fn handle_posting_message(
-    State(application): State<Arc<Application>>,
-    Json(body): Json<dto::PostMessageBody>,
-) -> Result<(), ()> {
-    debug!(
-        "Distributing push message to subscribers for floor: {}",
-        body.floor
-    );
-
-    let payload = serde_json::to_string(&body).map_err(|e| {
-        error!("Failed to serialize PostMessageBody: {:?}", e);
-    })?;
-
-    let result = application
-        .send_push_message(payload.as_bytes(), db::Floor(body.floor), Some(60))
-        .await;
-
-    match result {
-        Ok(_) => info!("Push message distributed successfully"),
-        Err(e) => {
-            error!("Failed to send push message: {:?}", e);
-            return Err(());
-        }
-    }
-    Ok(())
-}
-
 async fn handle_getting_public_key(
     State(application): State<Arc<Application>>,
 ) -> impl IntoResponse {
@@ -290,7 +287,15 @@ async fn handle_posting_banana(
     let dto::BananaStateForFloor {floor, has_banana} = banana_state_for_floor;
     application.set_banana_for_floor(Floor(floor), has_banana).await.map_err(|e| {
         error!("Failed to set_banana_for_floor: {e}");
-    })
+    })?;
+
+    if has_banana {
+        let message = dto::PostMessageBody {
+            floor: floor
+        };
+        application.distribute_banana_message(&message).await?;
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -316,7 +321,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
                 .get(handle_getting_subscription)
                 .delete(handle_deleting_subscription),
         )
-        .route("/api/message", post(handle_posting_message))
         .route("/api/public-key", get(handle_getting_public_key))
         .route("/api/banana", get(handle_getting_banana).post(handle_posting_banana))
         .fallback_service(static_dir)

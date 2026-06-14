@@ -208,8 +208,8 @@ update msg model =
         ReportBananaFound (Floor floor) ->
             ( { model | reportingBananaFoundStatus = ReportingBananaFound }
             , Http.post
-                { url = "/api/message"
-                , body = Http.jsonBody (Json.Encode.object [ ( "floor", Json.Encode.int floor ) ])
+                { url = "/api/banana"
+                , body = Http.jsonBody (Json.Encode.object [ ( "floor", Json.Encode.int floor ), ( "has_banana", Json.Encode.bool True ) ])
                 , expect = Http.expectWhatever ReportBananaFoundResult
                 }
             )
