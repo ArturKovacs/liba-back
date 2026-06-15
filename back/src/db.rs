@@ -1,7 +1,6 @@
 use futures::io;
 use log::debug;
-use serde::{Deserialize, Serialize, de::{DeserializeOwned}};
-use tokio::sync::Mutex;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{HashMap, HashSet},
     fs::TryLockError,
@@ -9,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tokio::sync::Mutex;
 use web_push::{SubscriptionInfo, SubscriptionKeys};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -85,7 +85,6 @@ pub struct DatabaseOptions {
 
 const DB_FILE_POSTFIX: &str = ".db.msgpack";
 
-
 enum DbOperationResult {
     WritebackNeeded,
     OnlyRead,
@@ -103,7 +102,7 @@ impl Database {
             format!("{}subscription{}", &db_file_prefix, DB_FILE_POSTFIX);
         Self {
             subscription_db_file_path: Path::new("./").join(subscription_db_filename),
-            banana_states: Mutex::new(HashSet::new())
+            banana_states: Mutex::new(HashSet::new()),
         }
     }
 
@@ -260,11 +259,7 @@ impl Database {
         banana_states.clone()
     }
 
-    pub async fn set_banana_state_for_floor(
-        &self,
-        floor: Floor,
-        has_banana: bool,
-    ) {
+    pub async fn set_banana_state_for_floor(&self, floor: Floor, has_banana: bool) {
         let mut banana_states = self.banana_states.lock().await;
         if has_banana {
             banana_states.insert(floor);
@@ -534,13 +529,10 @@ mod tests {
         let floor = Floor(5);
 
         // Set banana state to true for the floor
-        db.set_banana_state_for_floor(floor, true)
-            .await;
+        db.set_banana_state_for_floor(floor, true).await;
 
         // Retrieve all banana states
-        let states = db
-            .get_banana_states()
-            .await;
+        let states = db.get_banana_states().await;
 
         // Verify the banana state was set correctly
         assert_eq!(
@@ -554,13 +546,10 @@ mod tests {
         );
 
         // Update the banana state to false
-        db.set_banana_state_for_floor(floor, false)
-            .await;
+        db.set_banana_state_for_floor(floor, false).await;
 
         // Retrieve and verify the updated state
-        let updated_states = db
-            .get_banana_states()
-            .await;
+        let updated_states = db.get_banana_states().await;
 
         assert!(
             !updated_states.contains(&floor),
@@ -582,19 +571,14 @@ mod tests {
         let floor_3 = Floor(3);
 
         // Set banana states for multiple floors
-        db.set_banana_state_for_floor(floor_1, true)
-            .await;
+        db.set_banana_state_for_floor(floor_1, true).await;
 
-        db.set_banana_state_for_floor(floor_2, false)
-            .await;
+        db.set_banana_state_for_floor(floor_2, false).await;
 
-        db.set_banana_state_for_floor(floor_3, true)
-            .await;
+        db.set_banana_state_for_floor(floor_3, true).await;
 
         // Retrieve all banana states
-        let states = db
-            .get_banana_states()
-            .await;
+        let states = db.get_banana_states().await;
 
         // Verify all states are correct
         assert_eq!(
@@ -616,13 +600,10 @@ mod tests {
         );
 
         // Update floor_2 to have banana
-        db.set_banana_state_for_floor(floor_2, true)
-            .await;
+        db.set_banana_state_for_floor(floor_2, true).await;
 
         // Retrieve and verify all states are updated correctly
-        let updated_states = db
-            .get_banana_states()
-            .await;
+        let updated_states = db.get_banana_states().await;
 
         assert_eq!(
             updated_states.len(),
@@ -682,12 +663,9 @@ mod tests {
             .expect("Failed to add subscription 2");
 
         // Now modify banana state multiple times
-        db.set_banana_state_for_floor(floor_1, true)
-            .await;
-        db.set_banana_state_for_floor(floor_2, false)
-            .await;
-        db.set_banana_state_for_floor(floor_1, false)
-            .await;
+        db.set_banana_state_for_floor(floor_1, true).await;
+        db.set_banana_state_for_floor(floor_2, false).await;
+        db.set_banana_state_for_floor(floor_1, false).await;
 
         // Verify subscriptions are still intact
         let retrieved_subs_floor_1 = db
@@ -757,12 +735,9 @@ mod tests {
         let floor_2 = Floor(2);
         let floor_3 = Floor(3);
 
-        db.set_banana_state_for_floor(floor_1, true)
-            .await;
-        db.set_banana_state_for_floor(floor_2, false)
-            .await;
-        db.set_banana_state_for_floor(floor_3, true)
-            .await;
+        db.set_banana_state_for_floor(floor_1, true).await;
+        db.set_banana_state_for_floor(floor_2, false).await;
+        db.set_banana_state_for_floor(floor_3, true).await;
 
         // Now add and remove subscriptions
         let subscription_info = SubscriptionInfo {
@@ -789,9 +764,7 @@ mod tests {
             .expect("Failed to remove subscription");
 
         // Verify banana states are still intact
-        let states = db
-            .get_banana_states()
-            .await;
+        let states = db.get_banana_states().await;
 
         assert_eq!(
             states.len(),

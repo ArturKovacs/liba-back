@@ -126,11 +126,7 @@ impl Application {
         self.database.get_banana_states().await
     }
 
-    async fn set_banana_for_floor(
-        &self,
-        floor: db::Floor,
-        has_banana: bool,
-    ) {
+    async fn set_banana_for_floor(&self, floor: db::Floor, has_banana: bool) {
         let mut last_banana_modify_date = self.last_banana_modify_time.lock().await;
         *last_banana_modify_date = get_local_date();
         drop(last_banana_modify_date);
@@ -315,16 +311,9 @@ async fn handle_getting_public_key(
 async fn handle_getting_banana(
     State(application): State<Arc<Application>>,
 ) -> Json<dto::BananaStates> {
-    let states = application
-        .get_banana_states()
-        .await;
+    let states = application.get_banana_states().await;
 
-    Json(
-        states
-            .into_iter()
-            .map(|floor| floor.0)
-            .collect(),
-    )
+    Json(states.into_iter().map(|floor| floor.0).collect())
 }
 
 async fn handle_posting_banana(
