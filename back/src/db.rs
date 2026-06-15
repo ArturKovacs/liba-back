@@ -1,6 +1,7 @@
 use futures::io;
 use log::debug;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::{DeserializeOwned}};
+use tokio::sync::Mutex;
 use std::{
     collections::{HashMap, HashSet},
     fs::TryLockError,
@@ -74,7 +75,7 @@ impl ExclusiveAccessFile {
 type Subscriptions = HashMap<SubscriptionId, SubscriptionRest>;
 
 /// The value is `true` if the floor has banana, and `false` otherwise
-pub type BananaState = HashMap<Floor, bool>;
+pub type BananaState = HashSet<Floor>;
 
 #[derive(Debug, Default)]
 pub struct DatabaseOptions {
@@ -84,14 +85,15 @@ pub struct DatabaseOptions {
 
 const DB_FILE_POSTFIX: &str = ".db.msgpack";
 
-pub struct Database {
-    subscription_db_file_path: PathBuf,
-    banana_state_db_file_path: PathBuf,
-}
 
 enum DbOperationResult {
     WritebackNeeded,
     OnlyRead,
+}
+
+pub struct Database {
+    subscription_db_file_path: PathBuf,
+    banana_states: Mutex<HashSet<Floor>>,
 }
 
 impl Database {
@@ -99,11 +101,9 @@ impl Database {
         let db_file_prefix = options.db_file_prefix.unwrap_or(String::new());
         let subscription_db_filename =
             format!("{}subscription{}", &db_file_prefix, DB_FILE_POSTFIX);
-        let banana_state_db_filename =
-            format!("{}banana_state{}", &db_file_prefix, DB_FILE_POSTFIX);
         Self {
             subscription_db_file_path: Path::new("./").join(subscription_db_filename),
-            banana_state_db_file_path: Path::new("./").join(banana_state_db_filename),
+            banana_states: Mutex::new(HashSet::new())
         }
     }
 
@@ -255,45 +255,28 @@ impl Database {
             .unwrap_or_default())
     }
 
-    pub async fn get_banana_states(&self) -> Result<BananaState, io::Error> {
-        let state = self
-            .access_db::<BananaState>(&self.banana_state_db_file_path, |_| {
-                DbOperationResult::OnlyRead
-            })
-            .await?;
-
-        Ok(state)
+    pub async fn get_banana_states(&self) -> BananaState {
+        let banana_states = self.banana_states.lock().await;
+        banana_states.clone()
     }
 
     pub async fn set_banana_state_for_floor(
         &self,
         floor: Floor,
         has_banana: bool,
-    ) -> Result<(), io::Error> {
-        self.access_db(
-            &self.banana_state_db_file_path,
-            |banana_state: &mut BananaState| {
-                banana_state.insert(floor, has_banana);
-                DbOperationResult::WritebackNeeded
-            },
-        )
-        .await?;
-
-        Ok(())
+    ) {
+        let mut banana_states = self.banana_states.lock().await;
+        if has_banana {
+            banana_states.insert(floor);
+        } else {
+            banana_states.remove(&floor);
+        }
     }
 
     /// Removes all entries from the banana state container
-    pub async fn clear_banana_states(&self) -> Result<(), io::Error> {
-        self.access_db(
-            &self.banana_state_db_file_path,
-            |banana_state: &mut BananaState| {
-                banana_state.clear();
-                DbOperationResult::WritebackNeeded
-            },
-        )
-        .await?;
-
-        Ok(())
+    pub async fn clear_banana_states(&self) {
+        let mut banana_states = self.banana_states.lock().await;
+        banana_states.clear();
     }
 }
 
@@ -548,21 +531,16 @@ mod tests {
         };
         let db = Database::new(db_options);
 
-        // Clean up database file before test
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
-
         let floor = Floor(5);
 
         // Set banana state to true for the floor
         db.set_banana_state_for_floor(floor, true)
-            .await
-            .expect("Failed to set banana state to true");
+            .await;
 
         // Retrieve all banana states
         let states = db
             .get_banana_states()
-            .await
-            .expect("Failed to get banana states");
+            .await;
 
         // Verify the banana state was set correctly
         assert_eq!(
@@ -570,31 +548,24 @@ mod tests {
             1,
             "Should have exactly one floor with banana state"
         );
-        assert_eq!(
-            states.get(&floor),
-            Some(&true),
-            "Floor 5 should have banana (true)"
+        assert!(
+            states.contains(&floor),
+            "Floor 5 should be in the set (has banana)"
         );
 
         // Update the banana state to false
         db.set_banana_state_for_floor(floor, false)
-            .await
-            .expect("Failed to set banana state to false");
+            .await;
 
         // Retrieve and verify the updated state
         let updated_states = db
             .get_banana_states()
-            .await
-            .expect("Failed to get updated banana states");
+            .await;
 
-        assert_eq!(
-            updated_states.get(&floor),
-            Some(&false),
-            "Floor 5 should not have banana (false)"
+        assert!(
+            !updated_states.contains(&floor),
+            "Floor 5 should not be in the set (no banana)"
         );
-
-        // Clean up
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
     }
 
     #[tokio::test]
@@ -606,83 +577,70 @@ mod tests {
         };
         let db = Database::new(db_options);
 
-        // Clean up database file before test
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
-
         let floor_1 = Floor(1);
         let floor_2 = Floor(2);
         let floor_3 = Floor(3);
 
         // Set banana states for multiple floors
         db.set_banana_state_for_floor(floor_1, true)
-            .await
-            .expect("Failed to set banana state for floor 1");
+            .await;
 
         db.set_banana_state_for_floor(floor_2, false)
-            .await
-            .expect("Failed to set banana state for floor 2");
+            .await;
 
         db.set_banana_state_for_floor(floor_3, true)
-            .await
-            .expect("Failed to set banana state for floor 3");
+            .await;
 
         // Retrieve all banana states
         let states = db
             .get_banana_states()
-            .await
-            .expect("Failed to get banana states");
+            .await;
 
         // Verify all states are correct
         assert_eq!(
             states.len(),
-            3,
-            "Should have exactly three floors with banana states"
+            2,
+            "Should have exactly two floors with banana (1 and 3)"
         );
-        assert_eq!(
-            states.get(&floor_1),
-            Some(&true),
-            "Floor 1 should have banana (true)"
+        assert!(
+            states.contains(&floor_1),
+            "Floor 1 should be in the set (has banana)"
         );
-        assert_eq!(
-            states.get(&floor_2),
-            Some(&false),
-            "Floor 2 should not have banana (false)"
+        assert!(
+            !states.contains(&floor_2),
+            "Floor 2 should not be in the set (no banana)"
         );
-        assert_eq!(
-            states.get(&floor_3),
-            Some(&true),
-            "Floor 3 should have banana (true)"
+        assert!(
+            states.contains(&floor_3),
+            "Floor 3 should be in the set (has banana)"
         );
 
         // Update floor_2 to have banana
         db.set_banana_state_for_floor(floor_2, true)
-            .await
-            .expect("Failed to update banana state for floor 2");
+            .await;
 
         // Retrieve and verify all states are updated correctly
         let updated_states = db
             .get_banana_states()
-            .await
-            .expect("Failed to get updated banana states");
+            .await;
 
         assert_eq!(
-            updated_states.get(&floor_1),
-            Some(&true),
-            "Floor 1 should still have banana"
+            updated_states.len(),
+            3,
+            "Should now have three floors with banana"
         );
-        assert_eq!(
-            updated_states.get(&floor_2),
-            Some(&true),
-            "Floor 2 should now have banana"
+        assert!(
+            updated_states.contains(&floor_1),
+            "Floor 1 should still be in the set"
         );
-        assert_eq!(
-            updated_states.get(&floor_3),
-            Some(&true),
-            "Floor 3 should still have banana"
+        assert!(
+            updated_states.contains(&floor_2),
+            "Floor 2 should now be in the set"
         );
-
-        // Clean up
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
+        assert!(
+            updated_states.contains(&floor_3),
+            "Floor 3 should still be in the set"
+        );
     }
 
     #[tokio::test]
@@ -696,7 +654,6 @@ mod tests {
 
         // Clean up database files before test
         let _ = std::fs::remove_file(&db.subscription_db_file_path);
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
 
         // Add subscriptions
         let subscription_info_1 = SubscriptionInfo {
@@ -726,14 +683,11 @@ mod tests {
 
         // Now modify banana state multiple times
         db.set_banana_state_for_floor(floor_1, true)
-            .await
-            .expect("Failed to set banana state");
+            .await;
         db.set_banana_state_for_floor(floor_2, false)
-            .await
-            .expect("Failed to set banana state");
+            .await;
         db.set_banana_state_for_floor(floor_1, false)
-            .await
-            .expect("Failed to update banana state");
+            .await;
 
         // Verify subscriptions are still intact
         let retrieved_subs_floor_1 = db
@@ -784,7 +738,6 @@ mod tests {
 
         // Clean up
         let _ = std::fs::remove_file(&db.subscription_db_file_path);
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
     }
 
     #[tokio::test]
@@ -798,7 +751,6 @@ mod tests {
 
         // Clean up database files before test
         let _ = std::fs::remove_file(&db.subscription_db_file_path);
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
 
         // Set banana states
         let floor_1 = Floor(1);
@@ -806,14 +758,11 @@ mod tests {
         let floor_3 = Floor(3);
 
         db.set_banana_state_for_floor(floor_1, true)
-            .await
-            .expect("Failed to set banana state for floor 1");
+            .await;
         db.set_banana_state_for_floor(floor_2, false)
-            .await
-            .expect("Failed to set banana state for floor 2");
+            .await;
         db.set_banana_state_for_floor(floor_3, true)
-            .await
-            .expect("Failed to set banana state for floor 3");
+            .await;
 
         // Now add and remove subscriptions
         let subscription_info = SubscriptionInfo {
@@ -842,32 +791,27 @@ mod tests {
         // Verify banana states are still intact
         let states = db
             .get_banana_states()
-            .await
-            .expect("Failed to get banana states");
+            .await;
 
         assert_eq!(
             states.len(),
-            3,
-            "Should still have three floors with banana states"
+            2,
+            "Should still have two floors with banana (1 and 3)"
         );
-        assert_eq!(
-            states.get(&floor_1),
-            Some(&true),
-            "Floor 1 banana state corrupted"
+        assert!(
+            states.contains(&floor_1),
+            "Floor 1 banana state corrupted (should have banana)"
         );
-        assert_eq!(
-            states.get(&floor_2),
-            Some(&false),
-            "Floor 2 banana state corrupted"
+        assert!(
+            !states.contains(&floor_2),
+            "Floor 2 banana state corrupted (should not have banana)"
         );
-        assert_eq!(
-            states.get(&floor_3),
-            Some(&true),
-            "Floor 3 banana state corrupted"
+        assert!(
+            states.contains(&floor_3),
+            "Floor 3 banana state corrupted (should have banana)"
         );
 
         // Clean up
         let _ = std::fs::remove_file(&db.subscription_db_file_path);
-        let _ = std::fs::remove_file(&db.banana_state_db_file_path);
     }
 }

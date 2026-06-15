@@ -30,7 +30,7 @@ mod db;
 
 /// Data Transfer Objects
 mod dto {
-    use std::collections::HashMap;
+    use std::collections::HashSet;
 
     use serde::{Deserialize, Serialize};
     use web_push::SubscriptionInfo;
@@ -65,7 +65,7 @@ mod dto {
 
     /// - key: A floor
     /// - value: `true` if there are bananas at the floor given by key. `false` otherwise.
-    pub type BananaStates = HashMap<u32, bool>;
+    pub type BananaStates = HashSet<u32>;
 }
 
 struct Application {
@@ -112,13 +112,13 @@ impl Application {
             .await
     }
 
-    async fn get_banana_states(&self) -> Result<BananaState, io::Error> {
+    async fn get_banana_states(&self) -> BananaState {
         let mut last_banana_modify_date = self.last_banana_modify_time.lock().await;
         let current_date = get_local_date();
         let date_difference = current_date - *last_banana_modify_date;
         let last_modify_was_today = date_difference.num_days() == 0;
         if !last_modify_was_today {
-            self.database.clear_banana_states().await?;
+            self.database.clear_banana_states().await;
             *last_banana_modify_date = current_date;
         }
         drop(last_banana_modify_date);
@@ -130,14 +130,14 @@ impl Application {
         &self,
         floor: db::Floor,
         has_banana: bool,
-    ) -> Result<(), io::Error> {
+    ) {
         let mut last_banana_modify_date = self.last_banana_modify_time.lock().await;
         *last_banana_modify_date = get_local_date();
         drop(last_banana_modify_date);
 
         self.database
             .set_banana_state_for_floor(floor, has_banana)
-            .await
+            .await;
     }
 
     async fn distribute_banana_message(&self, body: &dto::PostMessageBody) -> Result<(), ()> {
@@ -314,21 +314,17 @@ async fn handle_getting_public_key(
 
 async fn handle_getting_banana(
     State(application): State<Arc<Application>>,
-) -> Result<Json<dto::BananaStates>, ()> {
-    application
+) -> Json<dto::BananaStates> {
+    let states = application
         .get_banana_states()
-        .await
-        .map_err(|e| {
-            error!("Failed to get_banana_states: {e}");
-        })
-        .map(|state| {
-            Json(
-                state
-                    .into_iter()
-                    .map(|(floor, value)| (floor.0, value))
-                    .collect(),
-            )
-        })
+        .await;
+
+    Json(
+        states
+            .into_iter()
+            .map(|floor| floor.0)
+            .collect(),
+    )
 }
 
 async fn handle_posting_banana(
@@ -338,10 +334,7 @@ async fn handle_posting_banana(
     let dto::BananaStateForFloor { floor, has_banana } = banana_state_for_floor;
     application
         .set_banana_for_floor(Floor(floor), has_banana)
-        .await
-        .map_err(|e| {
-            error!("Failed to set_banana_for_floor: {e}");
-        })?;
+        .await;
 
     if has_banana {
         let message = dto::PostMessageBody { floor: floor };

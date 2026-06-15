@@ -102,7 +102,7 @@ function subscriptionToSerializable(subscription) {
     };
 }
 
-/** @returns {Promise<{[floor: string]: boolean}>} The states object */
+/** @returns {Promise<number[]>} The states object */
 async function getBananaStates() {
     const response = await fetch("/api/banana");
     if (!response.ok) {
@@ -284,14 +284,13 @@ async function main(serviceWorkerRegistration) {
     }
 
     const subscription = await tryGetPushSubscription();
-    const bananaStatesObject = await getBananaStates();
-    const bananaStatesArray = Object.entries(bananaStatesObject).map(([floorStr, hasBanana]) => [parseInt(floorStr), hasBanana]);
+    const bananaStates = await getBananaStates();
 
     const app = Elm.Main.init({
         node: document.getElementById("app"),
         flags: {
             subscribedToFloors: subscription?.floors ?? [],
-            bananaStates: bananaStatesArray
+            bananaStates: bananaStates
         }
     });
 
