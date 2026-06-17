@@ -41,9 +41,11 @@ portResultFailedName : String
 portResultFailedName =
     "failed"
 
+
 portResultNoPushManagerName : String
 portResultNoPushManagerName =
     "noPushManager"
+
 
 port subscribeToFloor : Int -> Cmd msg
 
@@ -504,17 +506,17 @@ makeSubscriptionPanel model floor =
                     ( True, True, False )
 
                 Just SubscriptionFailedNoPushManager ->
-                    (False, False, True)
+                    ( False, False, True )
 
                 _ ->
                     ( False, False, False )
     in
     Element.row [ centerX, spacing 8 ]
-        [
-            if gotNoPushManager then
-                paragraph [centerX, Font.center] [text "iOS-en az értesítésekhez, előbb a Home Screen-hez kell adni ezt az oldalt"]
-            else
-                Input.checkbox []
+        [ if gotNoPushManager then
+            paragraph [ centerX, Font.center ] [ text "iOS-en az értesítésekhez, előbb a Home Screen-hez kell adni ezt az oldalt" ]
+
+          else
+            Input.checkbox []
                 { onChange =
                     if inProgress then
                         \_ -> DoNothing
