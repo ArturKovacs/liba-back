@@ -168,6 +168,26 @@ async function sendUnsubscribeToServer(subscription, floor) {
         throw new Error(errorMessage);
     }
 }
+/**
+ * @param {PushSubscription} subscription 
+ * @param {number} floor
+ * @param {number} attempts
+ */
+async function sendSubscriptionToServerWithAttempts(subscription, floor, attempts) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            await sendSubscriptionToServer(subscription, floor);
+            return subscription;
+        } catch (error) {
+            console.error(`Attempt ${attempt} to send push subscription failed:`, error);
+            if (attempt <= attempts) {
+                console.log(`Retrying sending subscription in 1 second...`);
+                await sleep(1000);
+                continue;
+            }
+        }
+    }
+}
 
 /**
  * @param {PushManager} pushManager
@@ -182,19 +202,7 @@ async function makeSubscription(pushManager, vapidPublicKey, floors) {
     console.log('New push subscription created for floors:', floors, subscription);
     const ATTEMPTS = 3;
     for (const floor of floors) {
-        for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
-            try {
-                await sendSubscriptionToServer(subscription, floor);
-                return subscription;
-            } catch (error) {
-                console.error(`Attempt ${attempt} to resubscribe to push failed:`, error);
-                if (attempt <= ATTEMPTS) {
-                    console.log(`Retrying sending subscription in 1 second...`);
-                    await sleep(1000);
-                    continue;
-                }
-            }
-        }
+        await sendSubscriptionToServerWithAttempts(subscription, floor, ATTEMPTS);
     }
     return subscription;
 }
