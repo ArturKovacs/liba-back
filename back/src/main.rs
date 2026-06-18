@@ -24,9 +24,10 @@ use web_push::{
     WebPushMessageBuilder,
 };
 
-use crate::db::{BananaState, Floor, SubscriptionId};
+use crate::{db::{BananaState, Floor, SubscriptionId}, file_server::FileServer};
 
 mod db;
+mod file_server;
 
 /// Data Transfer Objects
 mod dto {
@@ -341,14 +342,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
 
     let shared_state = Arc::new(Application::new(vapid_private_key, vapid_public_key));
 
-    let static_dir = ServeDir::new("./static")
-        .append_index_html_on_directories(true)
-        .fallback(get(handle_getting_index));
+    let static_dir_service = FileServer::new("./static")?;
 
     let app = Router::new()
+        .route("/", get(handle_getting_index))
         .route("/floor/{floor_id}", get(handle_getting_index))
         .route("/debug", get(handle_getting_index))
-        .route("/hello", get(async || "Hello, World!"))
         .route(
             "/api/subscription",
             post(handle_posting_subscription)
@@ -360,7 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>
             "/api/banana",
             get(handle_getting_banana).post(handle_posting_banana),
         )
-        .fallback_service(static_dir)
+        .fallback_service(static_dir_service)
         .with_state(shared_state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
