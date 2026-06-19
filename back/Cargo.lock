@@ -1218,10 +1218,8 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
  "tower-http",
- "tower-service",
  "web-push",
 ]
 
