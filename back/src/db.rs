@@ -212,6 +212,21 @@ impl Database {
         .map(|_| ())
     }
 
+    pub async fn remove_all_subscriptions_for(
+        &self,
+        subscription: &SubscriptionId,
+    ) -> Result<(), io::Error> {
+        self.access_db(
+            &self.subscription_db_file_path,
+            |subscriptions: &mut Subscriptions| {
+                subscriptions.remove(subscription);
+                DbOperationResult::WritebackNeeded
+            },
+        )
+        .await
+        .map(|_| ())
+    }
+
     /// Returns subscriptions that are subscribed to the given floor
     pub async fn get_subscriptions(
         &self,

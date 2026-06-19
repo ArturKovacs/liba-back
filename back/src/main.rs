@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::anyhow;
 use chrono::{Local, NaiveDate};
 use futures::future::join_all;
 
@@ -78,6 +79,12 @@ struct Application {
 
 fn get_local_date() -> NaiveDate {
     Local::now().date_naive()
+}
+
+#[derive(Debug)]
+enum PushMessageSendError {
+    EndpointNotValid,
+    Other,
 }
 
 impl Application {
@@ -171,10 +178,26 @@ impl Application {
             .get_subscriptions(floor)
             .await
             .map_err(|e| format!("Error during get_subscriptions. {e}"))?;
-        let futures = subscriptions.iter().map(async |subscription_info| {
-            self.send_push_message_for_single(subscription_info, payload, ttl)
-                .await
-        });
+        let futures =
+            subscriptions
+                .iter()
+                .map(async |subscription_info| -> Result<(), anyhow::Error> {
+                    let result = self
+                        .send_push_message_for_single(subscription_info, payload, ttl)
+                        .await;
+                    if let Err(PushMessageSendError::EndpointNotValid) = result {
+                        let subscription_id = SubscriptionId {
+                            endpoint: subscription_info.endpoint.clone(),
+                        };
+                        self.database
+                            .remove_all_subscriptions_for(&subscription_id)
+                            .await
+                            .map_err(|e| {
+                                anyhow!("Failed remove_all_subscriptions_for. Error: {e}")
+                            })?;
+                    }
+                    Ok(())
+                });
 
         let results = join_all(futures).await;
         for result in results {
@@ -189,7 +212,7 @@ impl Application {
         subscription_info: &SubscriptionInfo,
         payload: &[u8],
         ttl: Option<u32>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), PushMessageSendError> {
         let mut builder = WebPushMessageBuilder::new(subscription_info);
 
         builder.set_payload(ContentEncoding::Aes128Gcm, payload);
@@ -204,19 +227,17 @@ impl Application {
             Ok(builder) => builder,
             Err(e) => {
                 error!("Failed calling VapidSignatureBuilder::from_pem: {:?}", e);
-                return Err(());
+                return Err(PushMessageSendError::Other);
             }
         };
 
         sig_builder.add_claim("sub", "mailto:test@example.com");
-        sig_builder.add_claim("foo", "bar");
-        sig_builder.add_claim("omg", 123);
 
         let signature = match sig_builder.build() {
             Ok(signature) => signature,
             Err(e) => {
                 error!("Failed calling sig_builder.build: {:?}", e);
-                return Err(());
+                return Err(PushMessageSendError::Other);
             }
         };
         builder.set_vapid_signature(signature);
@@ -225,15 +246,20 @@ impl Application {
             Ok(message) => message,
             Err(e) => {
                 error!("Failed calling WebPushMessageBuilder::build: {:?}", e);
-                return Err(());
+                return Err(PushMessageSendError::Other);
             }
         };
 
-        if let Err(e) = self.client.send(web_push_message).await {
-            error!("Failed calling self.client.send: {:?}", e);
-            return Err(());
+        match self.client.send(web_push_message).await {
+            Err(web_push::WebPushError::EndpointNotValid(_)) => {
+                return Err(PushMessageSendError::EndpointNotValid);
+            }
+            Err(e) => {
+                error!("Failed calling self.client.send: {:?}", e);
+                return Err(PushMessageSendError::Other);
+            }
+            Ok(()) => (),
         }
-
         Ok(())
     }
 }
@@ -316,6 +342,7 @@ async fn handle_getting_banana(
     Json(states.into_iter().map(|floor| floor.0).collect())
 }
 
+#[axum::debug_handler]
 async fn handle_posting_banana(
     State(application): State<Arc<Application>>,
     Json(banana_state_for_floor): Json<dto::BananaStateForFloor>,
