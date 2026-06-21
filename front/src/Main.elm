@@ -414,6 +414,10 @@ myGray =
     rgb255 35 35 35
 
 
+myLightGray : Color
+myLightGray = 
+    rgb255 110 110 110
+
 myWhite : Color
 myWhite =
     rgb255 210 210 210
@@ -646,14 +650,31 @@ makeBananaReportButton model floor =
         }
 
 
+footerView : Element Msg
+footerView =
+    Element.newTabLink
+        [ width fill
+        , paddingEach
+            { top = 0
+            , bottom = 24
+            , left = 0
+            , right = 0
+            }
+        , Font.color myLightGray
+        , centerX
+        , Font.center
+        , Font.underline
+        ]
+        { url = "https://github.com/ArturKovacs/vanbanan"
+        , label = text "forráskód"
+        }
+
+
 view : Model -> Browser.Document Msg
 view model =
     let
-        currentRoute =
-            parseRoute model.url
-
-        content =
-            case currentRoute of
+        page =
+            case parseRoute model.url of
                 Home ->
                     homeView model
 
@@ -661,72 +682,75 @@ view model =
                     floorView model (Floor floorId)
     in
     { title = "Van Banán?"
-    , body = [ content ]
+    , body =
+        [ layout
+            [ Background.color myGray
+            , Font.color myYellow
+            ]
+            (column
+                [ width fill
+                , height fill
+                ]
+                [ el [ width fill, height fill ] page
+                , footerView
+                ]
+            )
+        ]
     }
 
 
-homeView : Model -> Html.Html Msg
+homeView : Model -> Element Msg
 homeView model =
-    layout
-        [ Background.color myGray
-        , Font.color myYellow
+    column
+        [ width fill
+        , spacing 24
+        , centerX
+        , centerY
+        , padding 24
         ]
-    <|
-        column
-            [ width fill
-            , spacing 24
+        (el
+            [ Font.size 36
+            , Font.bold
             , centerX
-            , centerY
-            , padding 24
             ]
-            (el
-                [ Font.size 36
-                , Font.bold
-                , centerX
-                ]
-                (text "Van Banán?")
-                :: List.map (makeFloorLink model) allFloors
-            )
+            (text "Van Banán?")
+            :: List.map (makeFloorLink model) allFloors
+        )
 
 
-floorView : Model -> Floor -> Html.Html Msg
+floorView : Model -> Floor -> Element Msg
 floorView model floor =
     let
         floorStr =
             String.fromInt (floorToInt floor)
     in
-    layout
-        [ Background.color myGray
-        , Font.color myYellow
+    column
+        [ width fill
+        , spacing 24
+        , centerX
+        , centerY
+        , padding 24
         ]
-    <|
-        column
-            [ width fill
-            , spacing 24
+        [ el
+            [ Font.size 36
+            , Font.bold
             , centerX
-            , centerY
-            , padding 24
             ]
-            [ el
-                [ Font.size 36
-                , Font.bold
-                , centerX
-                ]
-                (text (floorStr ++ ". Emelet"))
-            , makeBananaStatusPanel model floor
-            , makeSubscriptionPanel model floor
-            , makeBananaReportButton model floor
-            , Element.link
-                [ Border.rounded 10
-                , Border.width 2
-                , Border.color myBlue
-                , paddingXY 24 14
-                , centerX
-                ]
-                { url = "/"
-                , label =
-                    el
-                        []
-                        (text "Emeletek")
-                }
+            (text (floorStr ++ ". Emelet"))
+        , makeBananaStatusPanel model floor
+        , makeSubscriptionPanel model floor
+        , makeBananaReportButton model floor
+        , Element.link
+            [ Border.rounded 10
+            , Border.width 2
+            , Border.color myBlue
+            , paddingXY 24 14
+            , centerX
             ]
+            { url = "/"
+            , label =
+                el
+                    []
+                    (text "Emeletek")
+            }
+        ]
